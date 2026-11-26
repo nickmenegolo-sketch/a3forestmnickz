@@ -1,0 +1,998 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Galeria do Pesadelo — MnickZ (Nicole Menegolo)</title>
+
+  <!-- Biblioteca A-Frame 1.5.0 para a cena 3D -->
+  <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
+  <!-- Tailwind CSS para a interface Overlay e HUD -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Fontes Góticas e Editoriais -->
+  <link href="https://fonts.googleapis.com/css2?family=Cinzel+Decorative:wght@700;900&family=Crimson+Text:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet">
+
+  <style>
+    body {
+      margin: 0;
+      overflow: hidden;
+      background-color: #050205;
+      font-family: 'Crimson Text', serif;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+
+    .font-gothic {
+      font-family: 'Cinzel Decorative', serif;
+    }
+
+    /* Efeito de vinheta sombria atmosférica */
+    #vignette {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      background: radial-gradient(circle, rgba(0, 0, 0, 0) 45%, rgba(10, 0, 5, 0.86) 100%);
+      z-index: 10;
+    }
+
+    /* Animação suave para o modal de inspeção das obras */
+    #art-modal {
+      transition: opacity 0.3s ease, transform 0.3s ease;
+    }
+    #art-modal.hidden-modal {
+      opacity: 0;
+      pointer-events: none;
+      transform: scale(0.96);
+    }
+    #art-modal.visible-modal {
+      opacity: 1;
+      pointer-events: auto;
+      transform: scale(1);
+    }
+
+    /* Tooltip flutuante exibida ao passar o mouse sobre um quadro */
+    #hover-pill {
+      transition: opacity 0.22s ease, transform 0.22s ease;
+    }
+    #hover-pill.hidden-pill {
+      opacity: 0;
+      transform: translate(-50%, 10px);
+      pointer-events: none;
+    }
+    #hover-pill.visible-pill {
+      opacity: 1;
+      transform: translate(-50%, 0);
+      pointer-events: none;
+    }
+
+    /* Barra de rolagem estilizada dentro do modal */
+    .gothic-scroll::-webkit-scrollbar {
+      width: 6px;
+    }
+    .gothic-scroll::-webkit-scrollbar-track {
+      background: rgba(15, 5, 10, 0.6);
+    }
+    .gothic-scroll::-webkit-scrollbar-thumb {
+      background: rgba(185, 28, 28, 0.55);
+      border-radius: 999px;
+    }
+
+    /* Garantir cursor de ponteiro quando sobre uma obra clicável */
+    .a-canvas.pointer-hover {
+      cursor: pointer !important;
+    }
+  </style>
+
+  <!-- ===================================================================== -->
+  <!-- COMPONENTES CUSTOMIZADOS A-FRAME (Registrados antes da cena carregar) -->
+  <!-- ===================================================================== -->
+  <script>
+    /**
+     * Componente: gallery-bounds
+     * Mantém o visitante dentro da clareira da exposição e impede
+     * que a câmera atravesse os quadros ou saia do piso 3D.
+     */
+    AFRAME.registerComponent('gallery-bounds', {
+      schema: {
+        minX: { type: 'number', default: -6.2 },
+        maxX: { type: 'number', default: 6.2 },
+        minZ: { type: 'number', default: -4.2 },
+        maxZ: { type: 'number', default: 7.0 },
+        eyeHeight: { type: 'number', default: 1.6 }
+      },
+      init: function () {
+        // Coordenadas XZ aproximadas dos 4 quadros para evitar colisão direta
+        this.obstacles = [
+          { x: -5.4, z: -3.8, r: 1.55 },
+          { x: -1.85, z: -6.0, r: 1.65 },
+          { x: 1.85, z: -6.0, r: 1.65 },
+          { x: 5.4, z: -3.8, r: 1.55 }
+        ];
+      },
+      tick: function () {
+        const pos = this.el.object3D.position;
+        const d = this.data;
+
+        // Mantém a altura fixa no nível dos olhos
+        pos.y = d.eyeHeight;
+
+        // Limita a área geral de caminhada
+        if (pos.x < d.minX) pos.x = d.minX;
+        if (pos.x > d.maxX) pos.x = d.maxX;
+        if (pos.z < d.minZ) pos.z = d.minZ;
+        if (pos.z > d.maxZ) pos.z = d.maxZ;
+
+        // Empurra suavemente para fora caso o visitante encoste em um pedestal/quadro
+        for (let i = 0; i < this.obstacles.length; i++) {
+          const obs = this.obstacles[i];
+          const dx = pos.x - obs.x;
+          const dz = pos.z - obs.z;
+          const distSq = dx * dx + dz * dz;
+          const minDist = obs.r;
+          if (distSq < minDist * minDist && distSq > 0.0001) {
+            const dist = Math.sqrt(distSq);
+            const push = (minDist - dist) / dist;
+            pos.x += dx * push;
+            pos.z += dz * push;
+          }
+        }
+      }
+    });
+
+    /**
+     * Componente: mobile-move
+     * Permite movimentação suave via botões na tela em celulares e tablets.
+     */
+    AFRAME.registerComponent('mobile-move', {
+      init: function () {
+        this.moveDir = { forward: 0, right: 0 };
+        this.speed = 3.2;
+        this._forwardVec = new THREE.Vector3();
+        this._rightVec = new THREE.Vector3();
+      },
+      setDirection: function (forward, right) {
+        this.moveDir.forward = forward;
+        this.moveDir.right = right;
+      },
+      tick: function (time, delta) {
+        if (!this.moveDir.forward && !this.moveDir.right) return;
+        const dt = Math.min(delta / 1000, 0.1);
+        const obj = this.el.object3D;
+
+        // Calcula direção horizontal da câmera (ignorando inclinação vertical)
+        obj.getWorldDirection(this._forwardVec);
+        this._forwardVec.y = 0;
+        if (this._forwardVec.lengthSq() > 0) this._forwardVec.normalize();
+        // Em Three.js a câmera olha para -Z, então invertemos para "frente"
+        this._forwardVec.negate();
+
+        this._rightVec.crossVectors(this._forwardVec, new THREE.Vector3(0, 1, 0)).normalize();
+
+        obj.position.addScaledVector(this._forwardVec, this.moveDir.forward * this.speed * dt);
+        obj.position.addScaledVector(this._rightVec, this.moveDir.right * this.speed * dt);
+      }
+    });
+  </script>
+</head>
+<body>
+
+  <!-- Vinheta atmosférica -->
+  <div id="vignette"></div>
+
+  <!-- ===================================================================== -->
+  <!-- HUD SUPERIOR COM TÍTULO E INSTRUÇÕES ADAPTATIVAS                      -->
+  <!-- ===================================================================== -->
+  <header class="fixed top-4 left-4 right-4 z-20 flex flex-wrap items-start justify-between gap-3 pointer-events-none">
+    <div class="select-none">
+      <h1 class="font-gothic text-lg sm:text-xl md:text-2xl text-red-500 drop-shadow-[0_2px_10px_rgba(220,38,38,0.85)] tracking-wider">
+        EXPOSIÇÃO • MNICKZ
+      </h1>
+      <p class="hidden md:inline-block text-slate-300 text-sm bg-black/65 backdrop-blur-sm px-3 py-1 rounded border border-red-900/50 mt-1">
+        Arraste para olhar • <b>WASD / Setas</b> para andar • <b>Clique</b> nos quadros para abrir
+      </p>
+      <p class="inline-block md:hidden text-slate-300 text-xs bg-black/65 backdrop-blur-sm px-2.5 py-1 rounded border border-red-900/50 mt-1">
+        Arraste para olhar • <b>Toque</b> nos quadros para abrir
+      </p>
+    </div>
+
+    <!-- Botão para resetar a posição da câmera -->
+    <button
+      id="reset-view-btn"
+      type="button"
+      title="Voltar ao centro da exposição"
+      class="pointer-events-auto text-xs uppercase tracking-widest bg-black/70 hover:bg-red-950/90 text-slate-200 hover:text-red-200 border border-red-900/60 px-3 py-1.5 rounded backdrop-blur-sm transition cursor-pointer shadow-lg">
+      ↺ Centralizar Vista
+    </button>
+  </header>
+
+  <!-- Tooltip exibida ao passar o mouse sobre uma obra na cena 3D -->
+  <div
+    id="hover-pill"
+    class="hidden-pill fixed bottom-20 left-1/2 z-20 bg-black/80 backdrop-blur-md border border-red-800/70 px-4 py-1.5 rounded-full shadow-[0_0_20px_rgba(185,28,28,0.4)] text-center">
+    <span id="hover-pill-title" class="font-gothic text-xs sm:text-sm text-red-400 tracking-wider"></span>
+    <span class="text-slate-400 text-xs ml-2">• Clique para ampliar</span>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- BARRA INFERIOR DE ACESSO RÁPIDO ÀS 4 OBRAS                            -->
+  <!-- ===================================================================== -->
+  <nav
+    aria-label="Acesso rápido às obras"
+    class="fixed bottom-4 left-1/2 -translate-x-1/2 z-20 flex items-center gap-1.5 sm:gap-2 bg-black/75 backdrop-blur-md border border-red-950/80 px-2.5 py-1.5 rounded-full shadow-[0_0_25px_rgba(0,0,0,0.85)] max-w-[95vw] overflow-x-auto">
+    <button type="button" data-open-art="0" class="quick-nav-btn whitespace-nowrap text-xs sm:text-sm px-3 py-1 rounded-full text-slate-300 hover:text-white hover:bg-red-900/60 border border-transparent hover:border-red-700/60 transition cursor-pointer">
+      01 • Death Fingers
+    </button>
+    <button type="button" data-open-art="1" class="quick-nav-btn whitespace-nowrap text-xs sm:text-sm px-3 py-1 rounded-full text-slate-300 hover:text-white hover:bg-emerald-950/80 border border-transparent hover:border-emerald-700/60 transition cursor-pointer">
+      02 • The School
+    </button>
+    <button type="button" data-open-art="2" class="quick-nav-btn whitespace-nowrap text-xs sm:text-sm px-3 py-1 rounded-full text-slate-300 hover:text-white hover:bg-emerald-950/80 border border-transparent hover:border-emerald-700/60 transition cursor-pointer">
+      03 • Animais
+    </button>
+    <button type="button" data-open-art="3" class="quick-nav-btn whitespace-nowrap text-xs sm:text-sm px-3 py-1 rounded-full text-red-300 hover:text-white hover:bg-red-900/60 border border-red-900/50 transition cursor-pointer">
+      ✦ A Artista
+    </button>
+  </nav>
+
+  <!-- Controles direcionais compactos para dispositivos móveis (visível apenas em telas touch/pequenas) -->
+  <div id="mobile-dpad" class="fixed bottom-16 right-4 z-20 md:hidden grid grid-cols-3 gap-1 w-28 opacity-80">
+    <div></div>
+    <button type="button" data-move="0,1" aria-label="Andar para frente" class="dpad-btn h-9 rounded bg-black/75 border border-red-900/60 text-red-300 active:bg-red-900/80 flex items-center justify-center text-sm">▲</button>
+    <div></div>
+    <button type="button" data-move="-1,0" aria-label="Andar para esquerda" class="dpad-btn h-9 rounded bg-black/75 border border-red-900/60 text-red-300 active:bg-red-900/80 flex items-center justify-center text-sm">◀</button>
+    <button type="button" data-move="0,-1" aria-label="Andar para trás" class="dpad-btn h-9 rounded bg-black/75 border border-red-900/60 text-red-300 active:bg-red-900/80 flex items-center justify-center text-sm">▼</button>
+    <button type="button" data-move="1,0" aria-label="Andar para direita" class="dpad-btn h-9 rounded bg-black/75 border border-red-900/60 text-red-300 active:bg-red-900/80 flex items-center justify-center text-sm">▶</button>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- TELA OVERLAY (MODAL) PARA EXIBIÇÃO DA OBRA / ARTISTA                  -->
+  <!-- ===================================================================== -->
+  <div
+    id="art-modal"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="modal-title"
+    class="hidden-modal fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-md p-3 sm:p-5">
+    <div class="relative max-w-4xl w-full bg-gradient-to-b from-[#14070c] via-[#0b0710] to-[#060308] border-2 border-red-900/80 rounded-lg shadow-[0_0_55px_rgba(185,28,28,0.45)] overflow-hidden flex flex-col md:flex-row max-h-[92vh]">
+
+      <!-- Botão Fechar -->
+      <button
+        id="close-modal-btn"
+        type="button"
+        aria-label="Fechar janela"
+        class="absolute top-3 right-3 z-20 w-10 h-10 rounded-full bg-red-950/90 hover:bg-red-700 text-red-200 hover:text-white border border-red-500/50 flex items-center justify-center text-xl font-bold transition cursor-pointer shadow-lg">
+        ✕
+      </button>
+
+      <!-- Área da Imagem Ampliada -->
+      <div class="md:w-3/5 bg-black/95 flex items-center justify-center p-4 sm:p-6 border-b md:border-b-0 md:border-r border-red-950 relative min-h-[240px]">
+        <img
+          id="modal-image"
+          src=""
+          alt="Obra selecionada"
+          class="max-h-[50vh] md:max-h-[75vh] w-auto object-contain rounded shadow-[0_0_30px_rgba(0,0,0,0.95)] border border-slate-800/80" />
+      </div>
+
+      <!-- Detalhes da Obra / Artista -->
+      <div class="md:w-2/5 p-5 sm:p-7 flex flex-col justify-between text-slate-200 overflow-y-auto gothic-scroll">
+        <div>
+          <span
+            id="modal-tag"
+            class="inline-block text-xs uppercase tracking-[0.22em] text-emerald-400 border border-emerald-800/60 bg-emerald-950/40 px-2.5 py-1 rounded mb-3">
+            Obra em Exposição
+          </span>
+          <h2 id="modal-title" class="font-gothic text-xl sm:text-2xl md:text-3xl text-red-400 mb-2 leading-tight pr-8 md:pr-0">
+            Título da Obra
+          </h2>
+          <p id="modal-artist" class="text-sm italic text-slate-400 mb-4 border-b border-red-950/80 pb-3">
+            Artista • Ano
+          </p>
+          <div id="modal-desc" class="text-base sm:text-lg leading-relaxed text-slate-300 space-y-3 select-text">
+            Descrição detalhada da obra.
+          </div>
+        </div>
+
+        <!-- Rodapé com Navegação entre Quadros e Botão Retornar -->
+        <div class="mt-6 pt-4 border-t border-red-950/70 space-y-2.5">
+          <div class="flex items-center justify-between gap-2">
+            <button
+              id="prev-art-btn"
+              type="button"
+              class="flex-1 py-1.5 px-3 bg-slate-900/80 hover:bg-red-950/80 text-slate-300 hover:text-red-200 text-xs uppercase tracking-wider rounded border border-slate-800 hover:border-red-800/70 transition cursor-pointer">
+              ← Anterior
+            </button>
+            <span id="modal-counter" class="text-xs text-slate-500 px-1">1 / 4</span>
+            <button
+              id="next-art-btn"
+              type="button"
+              class="flex-1 py-1.5 px-3 bg-slate-900/80 hover:bg-red-950/80 text-slate-300 hover:text-red-200 text-xs uppercase tracking-wider rounded border border-slate-800 hover:border-red-800/70 transition cursor-pointer">
+              Próxima →
+            </button>
+          </div>
+
+          <button
+            id="close-modal-footer"
+            type="button"
+            class="w-full py-2.5 px-4 bg-gradient-to-r from-red-950 via-red-900 to-red-950 hover:from-red-800 hover:to-red-800 text-red-100 font-gothic tracking-widest text-xs sm:text-sm rounded border border-red-600/50 transition cursor-pointer shadow-md">
+            RETORNAR À NÉVOA
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- CENA 3D A-FRAME                                                       -->
+  <!-- ===================================================================== -->
+  <a-scene
+    id="gallery-scene"
+    fog="type: exponential; color: #0b121b; density: 0.068"
+    renderer="antialias: true; colorManagement: true; toneMapping: ACESFilmic; exposure: 1.05"
+    cursor="rayOrigin: mouse; fuse: false"
+    raycaster="objects: .clickable"
+    vr-mode-ui="enabled: false">
+
+    <!-- ASSETS: Imagens carregadas a partir dos links diretos do Google Drive -->
+    <a-assets timeout="12000">
+      <img id="img-obra-1" crossorigin="anonymous" data-drive-id="15k8IZBlRNVT2AlW-Rh4al_g2_OlhpEFD" src="https://lh3.googleusercontent.com/d/15k8IZBlRNVT2AlW-Rh4al_g2_OlhpEFD" />
+      <img id="img-obra-2" crossorigin="anonymous" data-drive-id="15DsI2vvVJBC69QHtA2Ta8i9hJGfazI-3" src="https://lh3.googleusercontent.com/d/15DsI2vvVJBC69QHtA2Ta8i9hJGfazI-3" />
+      <img id="img-obra-3" crossorigin="anonymous" data-drive-id="1vb223E1SKHaMt4CimCkDDPjrlaWykdgZ" src="https://lh3.googleusercontent.com/d/1vb223E1SKHaMt4CimCkDDPjrlaWykdgZ" />
+      <img id="img-artista" crossorigin="anonymous" data-drive-id="1UEyG5ZqSIZCQouQMoVRThdCrnRAL-pU6" src="https://lh3.googleusercontent.com/d/1UEyG5ZqSIZCQouQMoVRThdCrnRAL-pU6" />
+    </a-assets>
+
+    <!-- Céu Noturno Profundo -->
+    <a-sky color="#070b12"></a-sky>
+
+    <!-- Chão Sombrio do Pântano / Caldeira -->
+    <a-plane
+      position="0 0 0"
+      rotation="-90 0 0"
+      width="80"
+      height="80"
+      color="#080c11"
+      roughness="0.92"
+      metalness="0.18">
+    </a-plane>
+
+    <!-- ========================================================== -->
+    <!-- ILUMINAÇÃO: Atmosfera Malévola/Freddy + Luzes de Galeria   -->
+    <!-- ========================================================== -->
+    <!-- Luz ambiente equilibrada -->
+    <a-light type="ambient" color="#223047" intensity="0.65"></a-light>
+    <!-- Luz fria lunar vindo do fundo -->
+    <a-light type="directional" color="#477a99" intensity="0.85" position="0 12 -15"></a-light>
+
+    <!-- Luzes vermelhas de pesadelo (Freddy) nas laterais -->
+    <a-light type="point" color="#dc2626" intensity="2.0" distance="18" position="-6.8 3.6 -3.5"></a-light>
+    <a-light type="point" color="#b91c1c" intensity="2.0" distance="18" position="6.8 3.6 -3.5"></a-light>
+
+    <!-- Luz verde-esmeralda mágica (Malévola) atrás do centro -->
+    <a-light type="point" color="#10b981" intensity="2.1" distance="16" position="0 3.2 -7.4"></a-light>
+
+    <!-- Luzes neutras suaves de museu à frente dos quadros para preservar as cores reais das artes -->
+    <a-light type="point" color="#fff7ed" intensity="1.05" distance="7.5" decay="2" position="-4.0 3.1 -2.0"></a-light>
+    <a-light type="point" color="#fff7ed" intensity="1.15" distance="8.0" decay="2" position="0 3.3 -3.7"></a-light>
+    <a-light type="point" color="#fff7ed" intensity="1.05" distance="7.5" decay="2" position="4.0 3.1 -2.0"></a-light>
+
+    <!-- ========================================================== -->
+    <!-- CÂMERA E CONTROLES DO VISITANTE (Com limites de mapa)      -->
+    <!-- ========================================================== -->
+    <a-entity id="rig" position="0 0 0">
+      <!-- Removido o a-ring fixo no centro para evitar conflito visual com cursor="rayOrigin: mouse" -->
+      <a-camera
+        id="main-camera"
+        position="0 1.6 4.2"
+        look-controls="pointerLockEnabled: false"
+        wasd-controls="acceleration: 22"
+        gallery-bounds="minX: -6.2; maxX: 6.2; minZ: -4.2; maxZ: 7.0; eyeHeight: 1.6"
+        mobile-move>
+      </a-camera>
+    </a-entity>
+
+    <!-- CONTÊINER PROCEDURAL: Espinhos, Lâminas Metálicas, Arcos e Névoa -->
+    <a-entity id="nightmare-environment"></a-entity>
+
+    <!-- ========================================================== -->
+    <!-- OBRA 01 - DEATH FINGERS (EXTREMA ESQUERDA)                 -->
+    <!-- ========================================================== -->
+    <a-entity id="frame-0" class="art-frame-group" data-id="0" data-base-height="2.7" data-max-width="2.45" position="-5.4 2.1 -3.8" rotation="0 38 0">
+      <!-- Moldura Gótica -->
+      <a-box class="frame-outer" width="2.4" height="3.1" depth="0.18" color="#0d090e" metalness="0.7" roughness="0.3"></a-box>
+      <a-box class="frame-inner" width="2.22" height="2.92" depth="0.2" color="#3f0d12" metalness="0.8" roughness="0.2"></a-box>
+      <!-- Tela Clicável -->
+      <a-plane
+        class="clickable art-piece"
+        data-id="0"
+        position="0 0 0.11"
+        width="2.0"
+        height="2.7"
+        material="src: #img-obra-1; shader: standard; roughness: 0.55; metalness: 0.05"
+        animation__hover="property: scale; to: 1.035 1.035 1.035; dur: 220; startEvents: mouseenter"
+        animation__leave="property: scale; to: 1 1 1; dur: 220; startEvents: mouseleave">
+      </a-plane>
+      <!-- Garras metálicas na moldura -->
+      <a-cone class="decor-left" position="-1.2 1.45 0.1" rotation="0 0 35" segments-radial="6" radius-bottom="0.08" radius-top="0.002" height="0.9" color="#71717a" metalness="0.95" roughness="0.15"></a-cone>
+      <a-cone class="decor-right" position="1.2 1.45 0.1" rotation="0 0 -35" segments-radial="6" radius-bottom="0.08" radius-top="0.002" height="0.9" color="#71717a" metalness="0.95" roughness="0.15"></a-cone>
+      <!-- Pedestal e Placa de Identificação -->
+      <a-cylinder position="0 -1.85 0" segments-radial="14" radius="0.35" height="0.8" color="#09070a" metalness="0.6" roughness="0.4"></a-cylinder>
+      <a-plane position="0 -1.52 0.36" rotation="-18 0 0" width="1.15" height="0.24" color="#0d060a" material="roughness: 0.6; metalness: 0.4">
+        <a-text value="01 • DEATH FINGERS" align="center" color="#f87171" width="2.1" position="0 0 0.01"></a-text>
+      </a-plane>
+    </a-entity>
+
+    <!-- ========================================================== -->
+    <!-- OBRA 02 - THE SCHOOL: POSTER (CENTRO ESQUERDA)             -->
+    <!-- ========================================================== -->
+    <a-entity id="frame-1" class="art-frame-group" data-id="1" data-base-height="2.8" data-max-width="2.5" position="-1.85 2.25 -6.0" rotation="0 13 0">
+      <!-- Moldura Gótica -->
+      <a-box class="frame-outer" width="2.5" height="3.2" depth="0.2" color="#090c0e" metalness="0.7" roughness="0.3"></a-box>
+      <a-box class="frame-inner" width="2.32" height="3.02" depth="0.22" color="#064e3b" metalness="0.8" roughness="0.25"></a-box>
+      <!-- Tela Clicável -->
+      <a-plane
+        class="clickable art-piece"
+        data-id="1"
+        position="0 0 0.12"
+        width="2.1"
+        height="2.8"
+        material="src: #img-obra-2; shader: standard; roughness: 0.55; metalness: 0.05"
+        animation__hover="property: scale; to: 1.035 1.035 1.035; dur: 220; startEvents: mouseenter"
+        animation__leave="property: scale; to: 1 1 1; dur: 220; startEvents: mouseleave">
+      </a-plane>
+      <!-- Chifres / Espinhos superiores estilo Malévola -->
+      <a-cone class="decor-left" position="-1.0 1.75 0.05" rotation="0 0 20" segments-radial="6" radius-bottom="0.14" radius-top="0.01" height="1.2" color="#090a0f" roughness="0.5"></a-cone>
+      <a-cone class="decor-right" position="1.0 1.75 0.05" rotation="0 0 -20" segments-radial="6" radius-bottom="0.14" radius-top="0.01" height="1.2" color="#090a0f" roughness="0.5"></a-cone>
+      <!-- Pedestal e Placa de Identificação -->
+      <a-cylinder position="0 -2.0 0" segments-radial="14" radius="0.38" height="0.9" color="#09070a" metalness="0.6" roughness="0.4"></a-cylinder>
+      <a-plane position="0 -1.62 0.39" rotation="-18 0 0" width="1.25" height="0.24" color="#070e0c" material="roughness: 0.6; metalness: 0.4">
+        <a-text value="02 • THE SCHOOL: POSTER" align="center" color="#34d399" width="2.05" position="0 0 0.01"></a-text>
+      </a-plane>
+    </a-entity>
+
+    <!-- ========================================================== -->
+    <!-- OBRA 03 - ANIMAIS TEXTURIZADOS (CENTRO DIREITA)            -->
+    <!-- ========================================================== -->
+    <a-entity id="frame-2" class="art-frame-group" data-id="2" data-base-height="2.8" data-max-width="2.5" position="1.85 2.25 -6.0" rotation="0 -13 0">
+      <!-- Moldura Gótica -->
+      <a-box class="frame-outer" width="2.5" height="3.2" depth="0.2" color="#090c0e" metalness="0.7" roughness="0.3"></a-box>
+      <a-box class="frame-inner" width="2.32" height="3.02" depth="0.22" color="#064e3b" metalness="0.8" roughness="0.25"></a-box>
+      <!-- Tela Clicável -->
+      <a-plane
+        class="clickable art-piece"
+        data-id="2"
+        position="0 0 0.12"
+        width="2.1"
+        height="2.8"
+        material="src: #img-obra-3; shader: standard; roughness: 0.55; metalness: 0.05"
+        animation__hover="property: scale; to: 1.035 1.035 1.035; dur: 220; startEvents: mouseenter"
+        animation__leave="property: scale; to: 1 1 1; dur: 220; startEvents: mouseleave">
+      </a-plane>
+      <!-- Chifres / Espinhos superiores estilo Malévola -->
+      <a-cone class="decor-left" position="-1.0 1.75 0.05" rotation="0 0 20" segments-radial="6" radius-bottom="0.14" radius-top="0.01" height="1.2" color="#090a0f" roughness="0.5"></a-cone>
+      <a-cone class="decor-right" position="1.0 1.75 0.05" rotation="0 0 -20" segments-radial="6" radius-bottom="0.14" radius-top="0.01" height="1.2" color="#090a0f" roughness="0.5"></a-cone>
+      <!-- Pedestal e Placa de Identificação -->
+      <a-cylinder position="0 -2.0 0" segments-radial="14" radius="0.38" height="0.9" color="#09070a" metalness="0.6" roughness="0.4"></a-cylinder>
+      <a-plane position="0 -1.62 0.39" rotation="-18 0 0" width="1.3" height="0.24" color="#070e0c" material="roughness: 0.6; metalness: 0.4">
+        <a-text value="03 • ANIMAIS TEXTURIZADOS" align="center" color="#34d399" width="2.0" position="0 0 0.01"></a-text>
+      </a-plane>
+    </a-entity>
+
+    <!-- ========================================================== -->
+    <!-- QUADRO 04 - ARTISTA: MNICKZ (EXTREMA DIREITA)              -->
+    <!-- Mesmo espaço e estrutura padronizada dos outros quadros    -->
+    <!-- ========================================================== -->
+    <a-entity id="frame-3" class="art-frame-group" data-id="3" data-base-height="2.7" data-max-width="2.45" position="5.4 2.1 -3.8" rotation="0 -38 0">
+      <!-- Moldura Gótica -->
+      <a-box class="frame-outer" width="2.4" height="3.1" depth="0.18" color="#0d090e" metalness="0.7" roughness="0.3"></a-box>
+      <a-box class="frame-inner" width="2.22" height="2.92" depth="0.2" color="#3f0d12" metalness="0.8" roughness="0.2"></a-box>
+      <!-- Tela Clicável -->
+      <a-plane
+        class="clickable art-piece"
+        data-id="3"
+        position="0 0 0.11"
+        width="2.0"
+        height="2.7"
+        material="src: #img-artista; shader: standard; roughness: 0.55; metalness: 0.05"
+        animation__hover="property: scale; to: 1.035 1.035 1.035; dur: 220; startEvents: mouseenter"
+        animation__leave="property: scale; to: 1 1 1; dur: 220; startEvents: mouseleave">
+      </a-plane>
+      <!-- Garras metálicas na moldura -->
+      <a-cone class="decor-left" position="-1.2 1.45 0.1" rotation="0 0 35" segments-radial="6" radius-bottom="0.08" radius-top="0.002" height="0.9" color="#71717a" metalness="0.95" roughness="0.15"></a-cone>
+      <a-cone class="decor-right" position="1.2 1.45 0.1" rotation="0 0 -35" segments-radial="6" radius-bottom="0.08" radius-top="0.002" height="0.9" color="#71717a" metalness="0.95" roughness="0.15"></a-cone>
+      <!-- Pedestal e Placa de Identificação -->
+      <a-cylinder position="0 -1.85 0" segments-radial="14" radius="0.35" height="0.8" color="#09070a" metalness="0.6" roughness="0.4"></a-cylinder>
+      <a-plane position="0 -1.52 0.36" rotation="-18 0 0" width="1.25" height="0.24" color="#0d060a" material="roughness: 0.6; metalness: 0.4">
+        <a-text value="ARTISTA • MNICKZ" align="center" color="#f87171" width="2.1" position="0 0 0.01"></a-text>
+      </a-plane>
+    </a-entity>
+
+  </a-scene>
+
+  <!-- ===================================================================== -->
+  <!-- SCRIPT PRINCIPAL: CENÁRIO OTIMIZADO, FALLBACK DE IMAGENS E INTERAÇÃO  -->
+  <!-- ===================================================================== -->
+  <script>
+    (function () {
+      'use strict';
+
+      // Fonte única de dados das 3 obras + quadro da artista (sem duplicação de URLs)
+      const artworksData = [
+        {
+          assetId: 'img-obra-1',
+          tag: 'OBRA 01 • TIPOGRAFIA',
+          title: 'DEATH FINGERS',
+          artist: 'MnickZ (Nicole Menegolo) • 2026',
+          description: `
+            <p>Obra realizada durante a aula no <strong>Laboratório de Experimentos Gráficos</strong>. Tipografia desenvolvida através de uma sequência de perguntas exploratórias.</p>
+            <p><strong>Intuito:</strong> transpassar desconforto e remeter à morte da paz.</p>
+          `
+        },
+        {
+          assetId: 'img-obra-2',
+          tag: 'OBRA 02 • CARTAZ DE CINEMA',
+          title: 'The School: Poster',
+          artist: 'MnickZ (Nicole Menegolo) • 2026',
+          description: `
+            <p>Obra realizada durante a aula no <strong>Laboratório de Experimentos Gráficos</strong>.</p>
+            <p><strong>Intuito:</strong> Poster de filme de terror para utilizar no expositor dos cinemas — gerar sensação de estranhamento e cautela com o desconhecido.</p>
+          `
+        },
+        {
+          assetId: 'img-obra-3',
+          tag: 'OBRA 03 • EXPERIMENTAÇÃO VISUAL',
+          title: 'Animais texturizados',
+          artist: 'MnickZ (Nicole Menegolo) • 2026',
+          description: `
+            <p>Obra realizada durante a aula no <strong>Laboratório de Experimentos Gráficos</strong>.</p>
+            <p><strong>Intuito:</strong> explorar técnicas de texturas e realizar desenhos por cima.</p>
+            <p><strong>Tema:</strong> Animais selvagens.</p>
+          `
+        },
+        {
+          assetId: 'img-artista',
+          tag: 'SOBRE A AUTORA • DESIGN GRÁFICO',
+          title: 'Artista das obras: MnickZ (Nicole Menegolo)',
+          artist: 'São Paulo / Osasco • Design Gráfico (2025–2026)',
+          description: `
+            <p><strong>História:</strong> Nascida em São Paulo e criada em Osasco. Com seus 20 anos de idade, iniciou a sua trajetória acadêmica em Design Gráfico no início do ano de 2025. Atualmente, realiza projetos gráficos para a faculdade (como os aqui expostos) e outros tipos de arte.</p>
+            <p class="pt-2">
+              Para saber mais, acesse:
+              <a href="https://www.instagram.com/w.nickzzz?avpt=eHVtbWRrdWxremF6" target="_blank" rel="noopener noreferrer" class="text-red-400 hover:text-red-300 underline break-all font-semibold">
+                https://www.instagram.com/w.nickzzz?avpt=eHVtbWRrdWxremF6
+              </a>
+            </p>
+          `
+        }
+      ];
+
+      /**
+       * Gera uma textura de fallback via Canvas caso o navegador bloqueie
+       * temporariamente os servidores do Google Drive por CORS ou rede offline.
+       */
+      function createFallbackDataURL(title) {
+        const canvas = document.createElement('canvas');
+        canvas.width = 600;
+        canvas.height = 800;
+        const ctx = canvas.getContext('2d');
+
+        const grad = ctx.createLinearGradient(0, 0, 0, 800);
+        grad.addColorStop(0, '#1a0810');
+        grad.addColorStop(1, '#070a10');
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, 600, 800);
+
+        ctx.strokeStyle = '#7f1d1d';
+        ctx.lineWidth = 10;
+        ctx.strokeRect(24, 24, 552, 752);
+
+        ctx.fillStyle = '#f87171';
+        ctx.font = 'bold 34px serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(title.slice(0, 26), 300, 380);
+
+        ctx.fillStyle = '#94a3b8';
+        ctx.font = '22px serif';
+        ctx.fillText('Clique para visualizar no modal', 300, 435);
+
+        return canvas.toDataURL('image/png');
+      }
+
+      /**
+       * Ajusta automaticamente a proporção (aspect ratio) do plano e da moldura 3D
+       * para corresponder exatamente às dimensões reais da imagem carregada.
+       */
+      function fitFrameToImage(frameIndex, imgEl) {
+        try {
+          if (!imgEl || !imgEl.naturalWidth || !imgEl.naturalHeight) return;
+          const group = document.getElementById(`frame-${frameIndex}`);
+          if (!group) return;
+
+          const baseH = parseFloat(group.getAttribute('data-base-height')) || 2.7;
+          const maxW = parseFloat(group.getAttribute('data-max-width')) || 2.45;
+          const ratio = Math.min(Math.max(imgEl.naturalWidth / imgEl.naturalHeight, 0.58), 1.65);
+
+          let planeW = baseH * ratio;
+          let planeH = baseH;
+          if (planeW > maxW) {
+            planeW = maxW;
+            planeH = planeW / ratio;
+          }
+
+          const plane = group.querySelector('.art-piece');
+          const innerBox = group.querySelector('.frame-inner');
+          const outerBox = group.querySelector('.frame-outer');
+          const decorLeft = group.querySelector('.decor-left');
+          const decorRight = group.querySelector('.decor-right');
+
+          if (plane) {
+            plane.setAttribute('width', planeW.toFixed(3));
+            plane.setAttribute('height', planeH.toFixed(3));
+          }
+          if (innerBox) {
+            innerBox.setAttribute('width', (planeW + 0.22).toFixed(3));
+            innerBox.setAttribute('height', (planeH + 0.22).toFixed(3));
+          }
+          if (outerBox) {
+            outerBox.setAttribute('width', (planeW + 0.40).toFixed(3));
+            outerBox.setAttribute('height', (planeH + 0.40).toFixed(3));
+          }
+          // Reposiciona os chifres/garras nos cantos superiores da moldura ajustada
+          if (decorLeft && decorRight) {
+            const halfW = (planeW + 0.36) / 2;
+            const topY = (planeH + 0.36) / 2;
+            const zOffset = frameIndex === 0 || frameIndex === 3 ? 0.1 : 0.05;
+            decorLeft.setAttribute('position', `${(-halfW).toFixed(2)} ${topY.toFixed(2)} ${zOffset}`);
+            decorRight.setAttribute('position', `${halfW.toFixed(2)} ${topY.toFixed(2)} ${zOffset}`);
+          }
+        } catch (err) {
+          console.warn('Não foi possível ajustar a proporção do quadro:', err);
+        }
+      }
+
+      /**
+       * Configura fallback em cascata para as imagens do Google Drive
+       * e dispara o ajuste de proporção assim que cada imagem carrega.
+       */
+      function setupResilientAssets() {
+        artworksData.forEach((art, idx) => {
+          const imgEl = document.getElementById(art.assetId);
+          if (!imgEl) return;
+
+          const driveId = imgEl.getAttribute('data-drive-id');
+          let fallbackStep = 0;
+
+          imgEl.addEventListener('load', () => {
+            fitFrameToImage(idx, imgEl);
+          });
+
+          imgEl.addEventListener('error', () => {
+            fallbackStep += 1;
+            if (fallbackStep === 1 && driveId) {
+              // Tentativa 2: endpoint oficial de thumbnail em alta resolução
+              imgEl.src = `https://drive.google.com/thumbnail?id=${driveId}&sz=w1600`;
+            } else if (fallbackStep === 2) {
+              // Tentativa 3: fallback visual gerado localmente em Canvas
+              imgEl.src = createFallbackDataURL(art.title);
+            }
+          });
+
+          // Caso a imagem já esteja em cache quando o script executar
+          if (imgEl.complete && imgEl.naturalWidth > 0) {
+            fitFrameToImage(idx, imgEl);
+          }
+        });
+      }
+
+      /**
+       * Gera o cenário procedural otimizado (menos polígonos e sem obstruções na visão).
+       */
+      function buildNightmareEnvironment() {
+        const envContainer = document.getElementById('nightmare-environment');
+        if (!envContainer || envContainer.children.length > 0) return;
+
+        // 1. 42 troncos e espinhos colossais ao redor da galeria (com geometria low-poly gótica)
+        const totalTrunks = 42;
+        for (let i = 0; i < totalTrunks; i++) {
+          const angle = (i / totalTrunks) * Math.PI * 2;
+          const radius = 8.4 + Math.random() * 10.5;
+          const x = Math.cos(angle) * radius;
+          const z = Math.sin(angle) * radius - 3;
+
+          // Preserva o corredor frontal e a visão limpa dos 4 quadros
+          if (z > 1.2 && Math.abs(x) < 6.0) continue;
+
+          const trunk = document.createElement('a-entity');
+          trunk.setAttribute('position', `${x.toFixed(2)} 0 ${z.toFixed(2)}`);
+          trunk.setAttribute(
+            'rotation',
+            `${((Math.random() - 0.5) * 22).toFixed(1)} ${(Math.random() * 360).toFixed(1)} ${((Math.random() - 0.5) * 22).toFixed(1)}`
+          );
+
+          const height = 5.2 + Math.random() * 6.8;
+          const baseRadius = 0.34 + Math.random() * 0.4;
+
+          const mainCone = document.createElement('a-cone');
+          mainCone.setAttribute('segments-radial', '6');
+          mainCone.setAttribute('radius-bottom', baseRadius.toFixed(2));
+          mainCone.setAttribute('radius-top', '0.02');
+          mainCone.setAttribute('height', height.toFixed(2));
+          mainCone.setAttribute('position', `0 ${(height / 2).toFixed(2)} 0`);
+          mainCone.setAttribute('color', i % 3 === 0 ? '#18090c' : '#0b111a');
+          mainCone.setAttribute('roughness', '0.88');
+          trunk.appendChild(mainCone);
+
+          // Espinhos laterais deslocados para brotar da superfície do tronco
+          const thornCount = 3 + Math.floor(Math.random() * 3);
+          for (let t = 0; t < thornCount; t++) {
+            const thorn = document.createElement('a-cone');
+            const tY = 1.2 + Math.random() * (height - 1.8);
+            const yRotDeg = t * 110 + Math.random() * 40;
+            const yRotRad = (yRotDeg * Math.PI) / 180;
+            const isMetallic = Math.random() > 0.65;
+            const offsetDist = baseRadius * (1 - tY / height) + 0.12;
+
+            thorn.setAttribute('segments-radial', '5');
+            thorn.setAttribute('radius-bottom', isMetallic ? '0.045' : '0.11');
+            thorn.setAttribute('radius-top', '0.002');
+            thorn.setAttribute('height', isMetallic ? '1.35' : '1.7');
+            thorn.setAttribute(
+              'position',
+              `${(Math.sin(yRotRad) * offsetDist).toFixed(2)} ${tY.toFixed(2)} ${(Math.cos(yRotRad) * offsetDist).toFixed(2)}`
+            );
+            thorn.setAttribute('rotation', `${(52 + Math.random() * 32).toFixed(1)} ${yRotDeg.toFixed(1)} 0`);
+            thorn.setAttribute('color', isMetallic ? '#9ca3af' : '#12090d');
+            if (isMetallic) {
+              thorn.setAttribute('metalness', '0.95');
+              thorn.setAttribute('roughness', '0.15');
+            }
+            trunk.appendChild(thorn);
+          }
+
+          envContainer.appendChild(trunk);
+        }
+
+        // 2. 10 arcos de espinhos entrelaçados ACIMA das obras (rotação Z restrita para não bloquear quadros)
+        for (let a = 0; a < 10; a++) {
+          const arch = document.createElement('a-torus');
+          const zPos = -1.2 - a * 1.25;
+          const xOffset = (Math.random() - 0.5) * 1.8;
+          const radius = 6.2 + Math.random() * 2.0;
+
+          arch.setAttribute('position', `${xOffset.toFixed(2)} 0.4 ${zPos.toFixed(2)}`);
+          // Rotação Z limitada entre -15° e +15° garante que o arco sempre forme uma abóbada superior
+          arch.setAttribute(
+            'rotation',
+            `${((Math.random() - 0.5) * 18).toFixed(1)} ${((Math.random() - 0.5) * 24).toFixed(1)} ${((Math.random() - 0.5) * 15).toFixed(1)}`
+          );
+          arch.setAttribute('radius', radius.toFixed(2));
+          arch.setAttribute('radius-tubular', (0.08 + Math.random() * 0.07).toFixed(3));
+          arch.setAttribute('segments-radial', '6');
+          arch.setAttribute('segments-tubular', '18');
+          arch.setAttribute('arc', '180');
+          arch.setAttribute('color', '#0a0f17');
+          arch.setAttribute('roughness', '0.9');
+          envContainer.appendChild(arch);
+        }
+
+        // 3. 14 bancos de névoa otimizados próximos ao chão (menos overdraw e segmentos reduzidos)
+        for (let f = 0; f < 14; f++) {
+          const fogPatch = document.createElement('a-sphere');
+          const fx = (Math.random() - 0.5) * 18;
+          const fz = -9 + Math.random() * 13;
+          const s = 2.6 + Math.random() * 2.8;
+
+          fogPatch.setAttribute('segments-width', '10');
+          fogPatch.setAttribute('segments-height', '8');
+          fogPatch.setAttribute('position', `${fx.toFixed(2)} 0.32 ${fz.toFixed(2)}`);
+          fogPatch.setAttribute('scale', `${s.toFixed(2)} 0.32 ${s.toFixed(2)}`);
+          fogPatch.setAttribute(
+            'material',
+            `color: ${f % 2 === 0 ? '#1e3a5f' : '#3b0d11'}; opacity: 0.14; transparent: true; depthWrite: false`
+          );
+          fogPatch.setAttribute(
+            'animation',
+            `property: position; to: ${(fx + 1.1).toFixed(2)} 0.42 ${fz.toFixed(2)}; dir: alternate; dur: ${Math.round(5500 + Math.random() * 4000)}; loop: true; easing: easeInOutSine`
+          );
+          envContainer.appendChild(fogPatch);
+        }
+      }
+
+      /**
+       * Inicializa interações da cena, proteção Drag vs. Click, trava de câmera no modal e HUD.
+       */
+      function initGalleryInteractions() {
+        const scene = document.getElementById('gallery-scene');
+        const cameraEl = document.getElementById('main-camera');
+        const modal = document.getElementById('art-modal');
+        const modalImg = document.getElementById('modal-image');
+        const modalTag = document.getElementById('modal-tag');
+        const modalTitle = document.getElementById('modal-title');
+        const modalArtist = document.getElementById('modal-artist');
+        const modalDesc = document.getElementById('modal-desc');
+        const modalCounter = document.getElementById('modal-counter');
+        const closeBtn = document.getElementById('close-modal-btn');
+        const closeFooterBtn = document.getElementById('close-modal-footer');
+        const prevBtn = document.getElementById('prev-art-btn');
+        const nextBtn = document.getElementById('next-art-btn');
+        const resetViewBtn = document.getElementById('reset-view-btn');
+        const hoverPill = document.getElementById('hover-pill');
+        const hoverPillTitle = document.getElementById('hover-pill-title');
+
+        let currentArtIndex = 0;
+        let isModalOpen = false;
+
+        // Estado para distinguir clique intencional de arraste da câmera (Drag vs. Click)
+        let pointerDownPos = { x: 0, y: 0 };
+        let wasDragging = false;
+        const DRAG_THRESHOLD_PX = 8;
+
+        window.addEventListener('pointerdown', (e) => {
+          pointerDownPos.x = e.clientX;
+          pointerDownPos.y = e.clientY;
+          wasDragging = false;
+        }, { passive: true });
+
+        window.addEventListener('pointermove', (e) => {
+          const dx = e.clientX - pointerDownPos.x;
+          const dy = e.clientY - pointerDownPos.y;
+          if (dx * dx + dy * dy > DRAG_THRESHOLD_PX * DRAG_THRESHOLD_PX) {
+            wasDragging = true;
+          }
+        }, { passive: true });
+
+        // Ativa ou desativa controles de navegação da câmera 3D
+        function setCameraControlsEnabled(enabled) {
+          if (!cameraEl) return;
+          cameraEl.setAttribute('wasd-controls', 'enabled', enabled);
+          cameraEl.setAttribute('look-controls', 'enabled', enabled);
+        }
+
+        function renderModalContent(index) {
+          const safeIndex = (index + artworksData.length) % artworksData.length;
+          currentArtIndex = safeIndex;
+          const art = artworksData[safeIndex];
+          const assetImg = document.getElementById(art.assetId);
+
+          // Usa a mesma imagem já resolvida em <a-assets> (evita divergência de URLs)
+          modalImg.src = assetImg ? assetImg.src : '';
+          modalImg.alt = art.title;
+          modalTag.textContent = art.tag;
+          modalTitle.textContent = art.title;
+          modalArtist.textContent = art.artist;
+          modalDesc.innerHTML = art.description;
+          modalCounter.textContent = `${safeIndex + 1} / ${artworksData.length}`;
+        }
+
+        function openArtModal(index) {
+          renderModalContent(index);
+          isModalOpen = true;
+          setCameraControlsEnabled(false);
+          hoverPill.classList.remove('visible-pill');
+          hoverPill.classList.add('hidden-pill');
+
+          modal.classList.remove('hidden-modal');
+          modal.classList.add('visible-modal');
+        }
+
+        function closeArtModal() {
+          isModalOpen = false;
+          modal.classList.remove('visible-modal');
+          modal.classList.add('hidden-modal');
+          setCameraControlsEnabled(true);
+        }
+
+        // Eventos dos quadros 3D (clique + feedback visual de cursor e tooltip)
+        document.querySelectorAll('.art-piece').forEach((piece) => {
+          const id = parseInt(piece.getAttribute('data-id'), 10);
+
+          piece.addEventListener('mouseenter', () => {
+            if (isModalOpen) return;
+            const canvas = scene.canvas;
+            if (canvas) canvas.classList.add('pointer-hover');
+            if (artworksData[id]) {
+              hoverPillTitle.textContent = artworksData[id].title;
+              hoverPill.classList.remove('hidden-pill');
+              hoverPill.classList.add('visible-pill');
+            }
+          });
+
+          piece.addEventListener('mouseleave', () => {
+            const canvas = scene.canvas;
+            if (canvas) canvas.classList.remove('pointer-hover');
+            hoverPill.classList.remove('visible-pill');
+            hoverPill.classList.add('hidden-pill');
+          });
+
+          piece.addEventListener('click', () => {
+            // Impede abertura acidental se o usuário estava arrastando a câmera ou com modal aberto
+            if (isModalOpen || wasDragging) return;
+            openArtModal(id);
+          });
+        });
+
+        // Botões da barra inferior de acesso rápido
+        document.querySelectorAll('.quick-nav-btn').forEach((btn) => {
+          btn.addEventListener('click', () => {
+            const id = parseInt(btn.getAttribute('data-open-art'), 10);
+            openArtModal(id);
+          });
+        });
+
+        // Botões internos do modal
+        closeBtn.addEventListener('click', closeArtModal);
+        closeFooterBtn.addEventListener('click', closeArtModal);
+        prevBtn.addEventListener('click', () => renderModalContent(currentArtIndex - 1));
+        nextBtn.addEventListener('click', () => renderModalContent(currentArtIndex + 1));
+
+        // Fechar ao clicar fora da caixa do modal
+        modal.addEventListener('click', (e) => {
+          if (e.target === modal) closeArtModal();
+        });
+
+        // Atalhos de teclado enquanto o modal está aberto (ESC, Setas Esq/Dir)
+        window.addEventListener('keydown', (e) => {
+          if (!isModalOpen) return;
+          if (e.key === 'Escape') closeArtModal();
+          if (e.key === 'ArrowLeft') renderModalContent(currentArtIndex - 1);
+          if (e.key === 'ArrowRight') renderModalContent(currentArtIndex + 1);
+        });
+
+        // Botão Centralizar Vista (retorna câmera à posição e rotação inicial)
+        resetViewBtn.addEventListener('click', () => {
+          if (!cameraEl) return;
+          cameraEl.object3D.position.set(0, 1.6, 4.2);
+          const lookControls = cameraEl.components['look-controls'];
+          if (lookControls && lookControls.pitchObject && lookControls.yawObject) {
+            lookControls.pitchObject.rotation.x = 0;
+            lookControls.yawObject.rotation.y = 0;
+          }
+        });
+
+        // Controles D-Pad para telas móveis / touch
+        document.querySelectorAll('.dpad-btn').forEach((btn) => {
+          const [right, forward] = btn.getAttribute('data-move').split(',').map(Number);
+
+          const startMove = (e) => {
+            e.preventDefault();
+            if (isModalOpen) return;
+            const mobileComp = cameraEl && cameraEl.components['mobile-move'];
+            if (mobileComp) mobileComp.setDirection(forward, right);
+          };
+
+          const stopMove = () => {
+            const mobileComp = cameraEl && cameraEl.components['mobile-move'];
+            if (mobileComp) mobileComp.setDirection(0, 0);
+          };
+
+          btn.addEventListener('pointerdown', startMove);
+          btn.addEventListener('pointerup', stopMove);
+          btn.addEventListener('pointerleave', stopMove);
+          btn.addEventListener('pointercancel', stopMove);
+        });
+      }
+
+      // Garante inicialização segura respeitando o ciclo de vida do A-Frame
+      function boot() {
+        setupResilientAssets();
+        const scene = document.getElementById('gallery-scene');
+        if (!scene) return;
+
+        const onSceneReady = () => {
+          buildNightmareEnvironment();
+          initGalleryInteractions();
+        };
+
+        if (scene.hasLoaded) {
+          onSceneReady();
+        } else {
+          scene.addEventListener('loaded', onSceneReady, { once: true });
+        }
+      }
+
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', boot);
+      } else {
+        boot();
+      }
+    })();
+  </script>
+</body>
+</html>
